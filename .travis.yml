@@ -7,11 +7,10 @@ cache:
   npm: true
 
 os:
-  - osx
-osx_image: xcode10.2
+  - windows
 
 install:
   - npm install
+
 script:
   - npm run dist
-
