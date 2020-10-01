@@ -1,26 +1,5 @@
 'use strict';
 
-// Initialize "close", "expand" and "minimize" buttons
-
-const close_btn = document.querySelector('#close-btn');
-const min_btn = document.querySelector('#min-btn');
-const expand_collapse_btn = document.querySelector('#expand-collapse-btn');
-let expanded = false;
-
-close_btn.onclick = () => {
-  _stopAudioAndMic();
-  close();
-
-  if (!assistantConfig["alwaysCloseToTray"]) {
-    quitApp();
-  }
-};
-
-min_btn.onclick = () => assistantWindow.minimize();
-expand_collapse_btn.onclick = () => toggleExpandWindow();
-
-// Library Imports
-
 const electron = require('electron');
 const assistantWindow = electron.remote.getCurrentWindow();
 const app = electron.remote.app;
@@ -30,10 +9,6 @@ const ipcRenderer = electron.ipcRenderer;
 const path = require('path');
 const GoogleAssistant = require('google-assistant');
 const fs = require('fs');
-const os = require('os');
-const { execSync, exec } = require('child_process');
-const themes = require('./themes.js');
-const supportedLanguages = require('./lang.js');
 
 let audPlayer = new AudioPlayer();
 let mic = new Microphone();
@@ -50,19 +25,18 @@ let assistantConfig = {
   "enableAudioOutput": true,
   "enableMicOnContinousConversation": true,
   "startAsMaximized": false,
-  "windowFloatBehavior": "always-on-top",
   "launchAtStartup": true,
   "alwaysCloseToTray": true,
   "enablePingSound": true,
   "enableAutoScaling": true,
   "enableMicOnStartup": false,
   "hotkeyBehavior": "launch+mic",
-  "language": "en-US",
   "theme": "dark"
 };
 
 let history = [];
 let historyHead = -1;
+let expanded = false;
 let firstLaunch = electron.remote.getGlobal('firstLaunch');
 let initScreenFlag = 1;
 let webMic = new p5.AudioIn();  // For Audio Visualization
@@ -72,9 +46,9 @@ let assistant_mic = document.querySelector('#assistant-mic');
 let suggestion_area = document.querySelector('#suggestion-area');
 let main_area = document.querySelector('#main-area');
 let init_headline;
-
-// Add click listener for "Settings" button
-document.querySelector('#settings-btn').onclick = openConfig;
+const close_btn = document.querySelector('#close-btn');
+const min_btn = document.querySelector('#min-btn');
+const expand_collapse_btn = document.querySelector('#expand-collapse-btn');
 
 // Notify the main process that first launch is completed
 ipcRenderer.send('update-first-launch');
@@ -82,14 +56,19 @@ ipcRenderer.send('update-first-launch');
 // Assuming as first-time user
 let isFirstTimeUser = true;
 
-// Check Microphone Access
-let _canAccessMicrophone = true;
+close_btn.onclick = () => {
+  mic.stop();
+  audPlayer.stop();
+  close();
 
-navigator.mediaDevices.getUserMedia({audio: true}).catch(e => {
-  console.error(e);
-  _canAccessMicrophone = false;
-  displayQuickMessage("Microphone is not accessible");
-})
+  if (!assistantConfig["alwaysCloseToTray"]) {
+    quitApp();
+  }
+};
+
+min_btn.onclick = () => assistantWindow.minimize();
+expand_collapse_btn.onclick = () => toggleExpandWindow();
+document.querySelector('#settings-btn').onclick = openConfig;
 
 // Initialize Configuration
 if (fs.existsSync(configFilePath)) {
@@ -210,13 +189,6 @@ if(assistantConfig["startAsMaximized"]) {
   toggleExpandWindow();
 }
 
-if (assistantConfig["windowFloatBehavior"] === 'close-on-blur') {
-  window.onblur = () => {
-    _stopAudioAndMic();
-    close();
-  }
-}
-
 const config = {
   auth: {
     keyFilePath: assistantConfig["keyFilePath"],
@@ -233,7 +205,7 @@ const config = {
       encodingOut: 'MP3', // supported are LINEAR16 / MP3 / OPUS_IN_OGG (defaults to LINEAR16)
       sampleRateOut: 24000, // supported are 16000 / 24000 (defaults to 24000)
     },
-    lang: assistantConfig["language"], // language code for input/output (defaults to en-US)
+    lang: 'en-US', // language code for input/output (defaults to en-US)
     deviceModelId: '', // use if you've gone through the Device Registration process
     deviceId: '', // use if you've gone through the Device Registration process
     // textQuery: "", // if this is set, audio input is ignored
@@ -486,7 +458,7 @@ const startConversation = (conversation) => {
         console.log('Conversation Complete')
       };
 
-      if (init_headline) init_headline.innerText = supportedLanguages[assistantConfig["language"]].welcomeMessage;
+      init_headline.innerText = 'Hi! How can I help?';
     })
     .on('error', error => {
       console.error(error);
@@ -606,7 +578,7 @@ assistant
 
       console.log('STARTING MIC...');
       if (assistantConfig["enablePingSound"]) audPlayer.playPingStart();
-      if (init_headline) init_headline.innerText = supportedLanguages[assistantConfig["language"]].listeningMessage;
+      init_headline.innerText = 'Listening...';
 
       // Set `webMic` for visulaization
       webMic.start();
@@ -816,7 +788,6 @@ function inspectResponseType(assistantResponseString) {
  * _(Defaults to `true`)_
  */
 function openLink(link, autoMinimizeAssistantWindow=true) {
-  if (link === '') return;
   electronShell.openExternal(link);
 
   if (autoMinimizeAssistantWindow) {
@@ -897,8 +868,7 @@ function openFileDialog(callback, openDialogTitle=null) {
       { name: 'JSON File', extensions: ['json'] }
     ],
     properties: ['openFile']
-  })
-    .then((result, bookmarks) => callback(result, bookmarks));
+  }, (filePaths, bookmarks) => callback(filePaths, bookmarks));
 }
 
 /**
@@ -928,10 +898,6 @@ function openConfig() {
   if (!document.querySelector('#config-screen')) {
     let currentHTML = document.querySelector('body').innerHTML;
 
-    if (!releases) {
-      getReleases();
-    }
-
     main_area.innerHTML = `
       <div id="config-screen" class="fade-in-from-bottom">
         <div style="
@@ -941,67 +907,6 @@ function openConfig() {
         ">
           Settings
         </div>
-
-        ${!_canAccessMicrophone ? `
-          <div
-            class="setting-key accordion"
-            style="
-              margin-top: 40px;
-              margin-right: 30px;
-              background: #ea433530;
-              padding: 10px 30px 18px 30px;
-              border-radius: 10px;
-            "
-          >
-            <input type="checkbox" id="alert-accordion" />
-            <label for="alert-accordion" class="accordion-tile">
-              <div style="width: 100%; display: inline-block;">
-                <span>
-                  <img src="../res/mic_off.svg" style="
-                    height: 20px;
-                    width: 20px;
-                    vertical-align: sub;
-                    padding-right: 5px;
-                    ${getEffectiveTheme() == 'light' ? '' : 'filter: invert(1);'}"
-                  >
-                </span>
-
-                <span style="width: 100%;">
-                  Assistant cannot access microphone
-                </span>
-
-                <span
-                  class="accordion-chevron"
-                  style="${getEffectiveTheme() == 'light' ? '' : 'filter: invert(1);'}"
-                >
-                  <img src="../res/chevron_down.svg" />
-                </span>
-              </div>
-            </label>
-
-            <div class="accordion-content">
-              <div style="margin-top: 30px;">
-                This could happen in the following cases:
-
-                <ul>
-                  <li>When your device does not have a microphone</li>
-                  <li>Permission to device's microphone is not granted</li>
-                </ul>
-
-                If you do have a working microphone in your device, you might need to
-                <strong>grant permission</strong> to the microphone.
-
-                ${_getMicPermEnableHelp()}
-
-                <i style="display: block; margin-top: 30px;">
-                  You must relaunch Google Assistant for the changes to take effect.
-                </i>
-              </div>
-            </div>
-          </div>`
-
-          : ''
-        }
 
         <div style="padding: 30px 0">
           <div class="setting-label">
@@ -1053,32 +958,6 @@ function openConfig() {
           <div class="setting-label">
             CONVERSATION
             <hr />
-          </div>
-          <div class="setting-item">
-            <div class="setting-key">
-              Language
-
-              <span style="
-                vertical-align: sub;
-                margin-left: 10px;
-              ">
-                <img
-                  src="../res/help.svg"
-                  title="Language to converse with the Assistant"
-                >
-              </span>
-            </div>
-            <div class="setting-value" style="height: 35px;">
-              <select id="lang-selector" style="padding-right: 10px;">
-                ${Object.keys(supportedLanguages).map(langCode => {
-                  return (`
-                    <option value="${langCode}">
-                      ${supportedLanguages[langCode]["langName"]}
-                    </option>
-                  `)
-                }).join('')}
-              </select>
-            </div>
           </div>
           <div class="setting-item">
             <div class="setting-key">
@@ -1208,28 +1087,6 @@ function openConfig() {
                 <input id="auto-scale" type="checkbox">
                 <span class="slider round"></span>
               </label>
-            </div>
-          </div>
-          <div class="setting-item">
-            <div class="setting-key">
-              Window Float Behavior
-
-              <span style="
-                vertical-align: sub;
-                margin-left: 10px;
-              ">
-                <img
-                  src="../res/help.svg"
-                  title="Configure window float behavior\n\nNormal: Window will not float\nAlways On Top: Window will float (appear on top of other apps)\nClose On Blur: Window will close when not in focus"
-                >
-              </span>
-            </div>
-            <div class="setting-value" style="height: 35px;">
-              <select id="win-float-behavior-selector" style="padding-right: 50px;">
-                <option value="normal">Normal</option>
-                <option value="always-on-top">Always On Top</option>
-                <option value="close-on-blur">Close on Blur</option>
-              </select>
             </div>
           </div>
           <div class="setting-label">
@@ -1404,75 +1261,6 @@ function openConfig() {
               </label>
             </div>
           </div>
-          <div class="setting-item">
-            <div class="setting-key">
-              Application Data Directory
-
-              <span style="
-                vertical-align: sub;
-                margin-left: 10px;
-              ">
-                <img
-                  src="../res/help.svg"
-                  title="Opens the directory where Assistant's application data is stored"
-                >
-              </span>
-            </div>
-            <div class="setting-value" style="height: 35px;">
-              <label
-                class="button setting-item-button"
-                onclick="electronShell.openPath(userDataPath)"
-              >
-                Open App Data Folder
-              </label>
-            </div>
-          </div>
-          <div class="setting-item">
-            <div class="setting-key">
-              Show Command Line Arguments
-
-              <span style="
-                vertical-align: sub;
-                margin-left: 10px;
-              ">
-                <img
-                  src="../res/help.svg"
-                  title="Display command line arguments supplied to the process"
-                >
-              </span>
-            </div>
-            <div class="setting-value" style="height: 35px;">
-              <label
-                class="button setting-item-button"
-                onclick="showArgsDialog()"
-              >
-                Show Command Line Args
-              </label>
-            </div>
-          </div>
-          <div class="setting-item">
-            <div class="setting-key">
-              About Assistant
-
-              <span style="
-                vertical-align: sub;
-                margin-left: 10px;
-              ">
-                <img
-                  src="../res/help.svg"
-                  title="Nerdy information for developers"
-                >
-              </span>
-            </div>
-            <div class="setting-value" style="height: 35px;">
-              <label
-                class="button setting-item-button"
-                onclick="showAboutBox()"
-              >
-                About
-              </label>
-            </div>
-          </div>
           <div class="setting-label">
             ABOUT
             <hr />
@@ -1507,83 +1295,6 @@ function openConfig() {
                   Check for Updates
                 </label>
               </div>
-              <div class="accordion" style="margin-top: 40px; background: #1e90ff30; padding: 10px 30px 18px 30px; border-radius: 10px;">
-                <input type="checkbox" id="whats-new" />
-                <label for="whats-new" class="accordion-tile">
-                  <div style="width: 100%; display: inline-block;">
-                    <span>
-                      <img src="../res/light_bulb.svg" style="
-                        height: 20px;
-                        width: 20px;
-                        vertical-align: sub;
-                        padding-right: 5px;
-                        ${getEffectiveTheme() == 'light' ? '' : 'filter: invert(1);'}"
-                      >
-                    </span>
-
-                    <span style="width: 100%;">
-                      What's new in this version
-                    </span>
-
-                    <span
-                      class="accordion-chevron"
-                      style="${getEffectiveTheme() == 'light' ? '' : 'filter: invert(1);'}"
-                    >
-                      <img src="../res/chevron_down.svg" />
-                    </span>
-                  </div>
-                </label>
-
-                <div class="accordion-content">
-                  <div style="margin-top: 30px;">
-                    ${(releases)
-                      ? _markdownToHtml(
-                        getChangelog()
-                      )
-
-                      : `
-                        <span>
-                          <img src="../res/error.svg" style="
-                            height: 20px;
-                            width: 20px;
-                            vertical-align: sub;
-                            padding-right: 5px;"
-                          >
-                        </span>
-                        <span style="color: var(--color-red);">
-                          An error occured while fetching releases
-                        </span>
-
-                        <div style="opacity: 0.5; margin-left: 28px; margin-top: 5px;">
-                          <i>
-                            Please check your internet
-                          </i>
-                        </div>
-                      `
-                    }
-
-                    ${(releases) ?
-                      `<div style="padding-top: 25px; padding-bottom: 10px;">
-                        <div class="button setting-item-button" onclick="openLink(getReleaseObject().html_url)">
-                          <span>
-                            <img src="../res/proceed.svg" style="
-                              height: 19px;
-                              width: 16px;
-                              vertical-align: sub;
-                              padding-right: 10px;
-                              ${getEffectiveTheme() == 'light' ? 'filter: invert(1);' : ''}"
-                            >
-                          </span>
-
-                          Show in GitHub
-                        </div>
-                      </div>`
-
-                      : ''
-                    }
-                  </div>
-                </div>
-              </div>
               <div style="margin-top: 40px;">
                 <div class="disabled" style="margin-bottom: 5px;">
                   Google Assistant Unofficial Desktop Client is an open source project
@@ -1612,13 +1323,11 @@ function openConfig() {
 
     let keyFilePathInput = main_area.querySelector('#key-file-path');
     let savedTokensPathInput = main_area.querySelector('#saved-tokens-path');
-    let languageSelector = document.querySelector('#lang-selector');
     let forceNewConversationCheckbox = document.querySelector('#new-conversation');
     let enableAudioOutput = document.querySelector('#audio-output');
     let enableMicOnContinousConversation = document.querySelector('#continous-conv-mic');
     let enableMicOnStartup = document.querySelector('#enable-mic-startup');
     let startAsMaximized = document.querySelector('#start-maximized');
-    let winFloatBehaviorSelector = document.querySelector('#win-float-behavior-selector');
     let launchAtStartUp = document.querySelector('#launch-at-startup');
     let alwaysCloseToTray = document.querySelector('#close-to-tray');
     let enablePingSound = document.querySelector('#ping-sound');
@@ -1630,13 +1339,11 @@ function openConfig() {
 
     keyFilePathInput.value = assistantConfig["keyFilePath"];
     savedTokensPathInput.value = assistantConfig["savedTokensPath"];
-    languageSelector.value = assistantConfig["language"];
     forceNewConversationCheckbox.checked = assistantConfig["forceNewConversation"];
     enableAudioOutput.checked = assistantConfig["enableAudioOutput"];
     enableMicOnContinousConversation.checked = assistantConfig["enableMicOnContinousConversation"];
     enableMicOnStartup.checked = assistantConfig["enableMicOnStartup"];
     startAsMaximized.checked = assistantConfig["startAsMaximized"];
-    winFloatBehaviorSelector.value = assistantConfig["windowFloatBehavior"];
     launchAtStartUp.checked = assistantConfig["launchAtStartup"];
     alwaysCloseToTray.checked = assistantConfig["alwaysCloseToTray"];
     enablePingSound.checked = assistantConfig["enablePingSound"];
@@ -1646,9 +1353,9 @@ function openConfig() {
 
     main_area.querySelector('#key-file-path-browse-btn').onclick = () => {
       openFileDialog(
-        (result) => {
-          if (!result.canceled)
-            keyFilePathInput.value = result.filePaths[0];
+        (filePaths) => {
+          if (filePaths[0])
+            keyFilePathInput.value = filePaths[0];
         },
         "Select Key File"
       );
@@ -1656,9 +1363,9 @@ function openConfig() {
 
     main_area.querySelector('#saved-tokens-path-browse-btn').onclick = () => {
       openFileDialog(
-        (result) => {
-          if (!result.canceled)
-            savedTokensPathInput.value = result.filePaths[0];
+        (filePaths) => {
+          if (filePaths[0])
+            savedTokensPathInput.value = filePaths[0];
         },
         "Select Saved Token File"
       );
@@ -1723,29 +1430,6 @@ function openConfig() {
       if (historyHead == -1) {
         document.querySelector('.app-title').innerText = "";
       }
-
-      // If the user is in welcome screen, show updated welcome message
-      init_headline = document.querySelector('#init-headline');
-
-      if (init_headline) {
-        const welcomeMsg = supportedLanguages[assistantConfig["language"]].welcomeMessage;
-        init_headline.innerText = welcomeMsg;
-
-        suggestion_area.innerHTML = `
-          <div class="suggestion-parent">
-            ${supportedLanguages[assistantConfig["language"]].initSuggestions.map(suggestionObj => {
-              return (`
-                <div
-                  class="suggestion"
-                  onclick="assistantTextQuery('${suggestionObj.query}')"
-                >
-                    ${suggestionObj.label}
-                </div>
-              `);
-            }).join('')}
-          </div>
-        `;
-      }
     }
 
     async function checkForUpdates() {
@@ -1787,7 +1471,7 @@ function openConfig() {
                     ${releases[0].tag_name}
                   </span>
                 </span>
-                <label id="download-update-btn" class="button setting-item-button" onclick="downloadAssistant()">
+                <label class="button setting-item-button" onclick="openLink('${getAssetDownloadUrl(releases[0])}')">
                   Download update
                 </label>
                 <span
@@ -1977,13 +1661,11 @@ function openConfig() {
 
         assistantConfig["keyFilePath"] = keyFilePathInput.value;
         assistantConfig["savedTokensPath"] = savedTokensPathInput.value;
-        assistantConfig["language"] = languageSelector.value;
         assistantConfig["forceNewConversation"] = forceNewConversationCheckbox.checked;
         assistantConfig["enableAudioOutput"] = enableAudioOutput.checked;
         assistantConfig["enableMicOnContinousConversation"] = enableMicOnContinousConversation.checked;
         assistantConfig["enableMicOnStartup"] = enableMicOnStartup.checked;
         assistantConfig["startAsMaximized"] = startAsMaximized.checked;
-        assistantConfig["windowFloatBehavior"] = winFloatBehaviorSelector.value;
         assistantConfig["launchAtStartup"] = launchAtStartUp.checked;
         assistantConfig["alwaysCloseToTray"] = alwaysCloseToTray.checked;
         assistantConfig["enablePingSound"] = enablePingSound.checked;
@@ -1994,25 +1676,10 @@ function openConfig() {
         // Apply settings for appropriate options
 
         config.conversation.isNew = assistantConfig["forceNewConversation"];
-        config.conversation.lang = assistantConfig["language"];
 
         app.setLoginItemSettings({
           openAtLogin: assistantConfig["launchAtStartup"]
         });
-
-        if (assistantConfig["windowFloatBehavior"] !== 'close-on-blur') {
-          (assistantConfig["windowFloatBehavior"] === 'always-on-top')
-            ? assistantWindow.setAlwaysOnTop(true, 'floating')
-            : assistantWindow.setAlwaysOnTop(false, 'normal');
-
-          window.onblur = null;
-        }
-        else {
-          window.onblur = () => {
-            _stopAudioAndMic();
-            close();
-          }
-        }
 
         // Notify about config changes to main process
         ipcRenderer.send('update-config', assistantConfig);
@@ -2109,7 +1776,6 @@ function assistantTextQuery(query) {
     config.conversation["textQuery"] = query;
     assistant.start(config.conversation);
     setQueryTitle(query);
-    assistant_input.value = "";
 
     stopMic();
   }
@@ -2201,7 +1867,7 @@ function deactivateLoader() {
  *
  * @param {String=} opts.subdetails
  * Sub-details/Short description of the error
- *
+ * 
  * @param {String=} opts.customStyle
  * Any custom styles that you want to apply
  */
@@ -2256,19 +1922,16 @@ function displayErrorScreen(opts={}) {
  * @param {Boolean} pushToHistory
  * Push the *screen data* to the `history`.
  * _(Defaults to `false`)_
- *
+ * 
  * @param {String} theme
  * Theme to be applied on screen data.
  * Leave this parameter to infer from `assistantConfig.theme`
  */
-async function displayScreenData(screen, pushToHistory=false, theme=null) {
+function displayScreenData(screen, pushToHistory=false, theme=null) {
   deactivateLoader();
 
   let htmlString = screen.data.toString();
   let htmlDocument = parser.parseFromString(htmlString, "text/html");
-  suggestion_area.innerHTML = '<div class="suggestion-parent"></div>';
-
-  console.log('Screen Data HTML Document');
   console.log(htmlDocument);
 
   let mainContentDOM = htmlDocument.querySelector("#assistant-card-content");
@@ -2283,7 +1946,7 @@ async function displayScreenData(screen, pushToHistory=false, theme=null) {
     let assistantMarkupResponse = main_area.querySelector('.assistant-markup-response');
     let emojis = assistantMarkupResponse.innerHTML.match(emojiRegex).filter(x => x);
 
-    console.log('Emojis:', emojis);
+    console.log(emojis);
 
     emojis.forEach(emoji => {
       assistantMarkupResponse.innerHTML = assistantMarkupResponse.innerHTML.replace(
@@ -2304,41 +1967,36 @@ async function displayScreenData(screen, pushToHistory=false, theme=null) {
   let hasKnowledgePanel = main_area.querySelector('#tv_knowledge_panel_source');
   let hasCarousel = main_area.querySelector('#selection-carousel-tv');
   let hasPhotoCarousel = main_area.querySelector('#photo-carousel-tv');
-  let hasTextContainer = element.classList.contains('show_text_container');
-  let hasPlainText = hasTextContainer && element.querySelector('.show_text_content');
+  let hasPlainText = element.classList.contains('show_text_container');
   let hasDefinition = main_area.querySelector('#flex_text_audio_icon_chunk');
-  let elementFlag = element.getAttribute('data-flag');
-  let isGoogleImagesContent;
 
   if (hasCarousel && !hasPhotoCarousel) {
     // Only when there is carousel other than "Photo Carousel"
     document.querySelector('.assistant-markup-response').lastElementChild.innerHTML = hasCarousel.outerHTML;
   }
 
-  if (elementFlag == null || elementFlag != 'prevent-auto-scale') {
-    if (!hasPlainText) {
-      if (assistantConfig["enableAutoScaling"]) {
-        element.setAttribute('style', `
-          transform: ${(hasKnowledgePanel || hasWebAnswer) ? "scale(0.65)" : "scale(0.75)"};
-          position: relative;
-          left: ${(hasKnowledgePanel || hasWebAnswer) ? "-15%" : (hasCarousel && !hasPhotoCarousel) ? "-91%" : (hasPhotoCarousel) ? "-26%" : "-10%"};
-          top: ${(hasKnowledgePanel) ? "-40px" : (hasWebAnswer) ? "-35px" : (hasDefinition) ? "-70px" : (hasCarousel && !hasPhotoCarousel) ? "-45px" : "-20px"};
-          ${(hasCarousel || hasPhotoCarousel)
-            ? `overflow-x: scroll; width: 217%;`
-            : ``
-          }
-          ${(hasPhotoCarousel) ? "padding: 2em 0 0 0;" : ""}
-        `);
-      }
-    }
-    else {
+  if (!hasPlainText) {
+    if (assistantConfig["enableAutoScaling"]) {
       element.setAttribute('style', `
-        transform: scale(1.2);
+        transform: ${(hasKnowledgePanel || hasWebAnswer) ? "scale(0.65)" : "scale(0.75)"};
         position: relative;
-        left: 13%;
-        top: 60px;
+        left: ${(hasKnowledgePanel || hasWebAnswer) ? "-15%" : (hasCarousel && !hasPhotoCarousel) ? "-91%" : (hasPhotoCarousel) ? "-26%" : "-10%"};
+        top: ${(hasKnowledgePanel) ? "-40px" : (hasWebAnswer) ? "-35px" : (hasDefinition) ? "-70px" : (hasCarousel && !hasPhotoCarousel) ? "-45px" : "-20px"};
+        ${(hasCarousel || hasPhotoCarousel)
+          ? `overflow-x: scroll; width: 217%;`
+          : ``
+        }
+        ${(hasPhotoCarousel) ? "padding: 2em 0 0 0;" : ""}
       `);
     }
+  }
+  else {
+    element.setAttribute('style', `
+      transform: scale(1.2);
+      position: relative;
+      left: 13%;
+      top: 60px;
+    `);
   }
 
   if (assistantConfig["enableAutoScaling"] || hasPlainText) main_area.querySelector('.assistant-markup-response').classList.add('no-x-scroll');
@@ -2360,9 +2018,7 @@ async function displayScreenData(screen, pushToHistory=false, theme=null) {
 
   let responseType;
 
-  if (hasTextContainer) {
-    // Includes Text Response and Google Images Response
-
+  if (hasPlainText) {
     main_area.innerHTML = `
     <img src="../res/Google_Assistant_logo.svg" style="
       height: 25px;
@@ -2370,15 +2026,13 @@ async function displayScreenData(screen, pushToHistory=false, theme=null) {
       top: 20px;
       left: 20px;
     ">` + main_area.innerHTML;
-  }
 
-  if (hasPlainText) {
     let innerText = document.querySelector(".show_text_content").innerText;
     responseType = inspectResponseType(innerText);
 
-    let textContainer = document.querySelector(".show_text_container");
-
     if (responseType["type"]) {
+      let textContainer = document.querySelector(".show_text_container");
+
       if (responseType["type"] == "google-search-result" ||
           responseType["type"] == "youtube-result") {
 
@@ -2424,112 +2078,9 @@ async function displayScreenData(screen, pushToHistory=false, theme=null) {
         `;
       }
     }
-
-    if (innerText.indexOf('https://www.google.com/search?tbm=isch') != -1) {
-      // Google Images
-      isGoogleImagesContent = true;
-      textContainer.innerHTML = `<div id="google-images-carousel"></div>`;
-
-      let imageSubject = encodeURIComponent(getCurrentQuery());
-      let googleImagesUrl = `https://images.google.com/search?tbm=isch&q=${imageSubject}&sfr=gws&gbv=1&sei=n37GXpmUFviwz7sP4KmZuA0`;
-      let googleImagesCarousel = main_area.querySelector('#google-images-carousel');
-
-      try {
-        let googleImagesResponse = await window.fetch(googleImagesUrl);
-
-        if (googleImagesResponse.ok) {
-          // Page loaded
-          let googleImagesPage = parser.parseFromString(await googleImagesResponse.text(), 'text/html');
-          let allImages = googleImagesPage.querySelectorAll('table img');
-
-          for (let i = 0; i < 20; i++) {
-            let currentImage = allImages[i];
-
-            googleImagesCarousel.innerHTML += `
-              <span>
-                <img
-                  style="height: 40vh; margin-right: 5px;"
-                  src="${currentImage.getAttribute('src')}"
-                />
-              </span>
-            `;
-          }
-        }
-        else {
-          console.log('Error: Response Object', googleImagesResponse)
-          let errorDetails = 'Assistant cannot fetch images due to malformed request';
-          let subdetails = `Error: HTTP status code ${googleImagesResponse.status}`;
-
-          if (googleImagesResponse.status == 429) {
-            // Rate limit exceeded
-            errorDetails = 'Too many requests sent in given time. Rate limit exceeded.';
-            subdetails = `Error: 429 Too Many Requests`
-          }
-          else {
-            suggestion_area.querySelector('.suggestion-parent').innerHTML += `
-            <div class="suggestion" onclick="retryRecent(false)">
-              <span>
-                <img src="../res/refresh.svg" style="
-                  height: 20px;
-                  width: 20px;
-                  vertical-align: top;
-                  padding-right: 5px;
-                  ${getEffectiveTheme() == 'light' ? 'filter: invert(1);' : ''}"
-                >
-              </span>
-              Retry
-            </div>
-            `;
-          }
-
-          displayErrorScreen({
-            title: 'Failed to fetch images',
-            details: errorDetails,
-            subdetails: subdetails
-          });
-        }
-      }
-
-      catch(e) {
-        if (e.name == TypeError.name) {
-          displayErrorScreen({
-            title: 'Failed to fetch images',
-            details: 'Assistant cannot fetch images due to internet issues.',
-            subdetails: 'Error: Internet not available'
-          });
-
-          suggestion_area.querySelector('.suggestion-parent').innerHTML += `
-          <div class="suggestion" onclick="retryRecent(false)">
-            <span>
-              <img src="../res/refresh.svg" style="
-                height: 20px;
-                width: 20px;
-                vertical-align: top;
-                padding-right: 5px;
-                ${getEffectiveTheme() == 'light' ? 'filter: invert(1);' : ''}"
-              >
-            </span>
-            Retry
-          </div>
-          `;
-        }
-      }
-    }
-    else {
-      isGoogleImagesContent = false;
-    }
   }
   else {
     responseType = inspectResponseType("");
-  }
-
-  if (hasPhotoCarousel) {
-    let imgs = element.querySelectorAll('img[data-src]');
-
-    for (let i = 0; i < imgs.length; i++) {
-      let img = imgs[i];
-      img.setAttribute('src', img.getAttribute('data-src'));
-    }
   }
 
   let externalLinks = main_area.querySelectorAll('[data-url]');
@@ -2543,12 +2094,14 @@ async function displayScreenData(screen, pushToHistory=false, theme=null) {
   // Set Suggestion Area
 
   let suggestionsDOM = htmlDocument.querySelector('#assistant-scroll-bar');
+
+  suggestion_area.innerHTML = '<div class="suggestion-parent"></div>';
   let suggestion_parent = document.querySelector('.suggestion-parent');
 
   if (suggestionsDOM != null) {
     if (responseType["type"] || hasWebAnswer || hasKnowledgePanel) {
       suggestion_parent.innerHTML += `
-        <div class="suggestion" onclick="openLink('https://google.com/search?q=${getCurrentQuery()}')" data-flag="action-btn">
+        <div class="suggestion" onclick="openLink('https://google.com/search?q=${getCurrentQuery()}')">
           <span>
             <img src="../res/google-logo.png" style="
               height: 20px;
@@ -2562,61 +2115,12 @@ async function displayScreenData(screen, pushToHistory=false, theme=null) {
       `;
     }
 
-    if (isGoogleImagesContent) {
-      suggestion_parent.innerHTML += `
-        <div class="suggestion" onclick="openLink('https://www.google.com/search?tbm=isch&q=${encodeURIComponent(getCurrentQuery())}')" data-flag="action-btn">
-          <span>
-            <img src="../res/google-logo.png" style="
-              height: 20px;
-              width: 20px;
-              vertical-align: top;
-              padding-right: 5px;"
-            >
-          </span>
-          Google Images
-        </div>
-      `;
-    }
-
-    if (hasPhotoCarousel) {
-      let currentQuery = getCurrentQuery();
-      let seperatorIndex = Math.min(
-        (currentQuery.indexOf('of') != -1) ? currentQuery.indexOf('of') : Infinity,
-        (currentQuery.indexOf('from') != -1) ? currentQuery.indexOf('from') : Infinity
-      );
-      let subject = currentQuery.slice(seperatorIndex).replace(/(^of|^from)\s/, '');
-      let photosUrl = 'https://photos.google.com/'
-
-      if (subject) {
-        photosUrl += `search/${subject}`
-      }
-
-      suggestion_parent.innerHTML += `
-        <div class="suggestion" onclick="openLink('${photosUrl}')" data-flag="action-btn">
-          <span>
-            <img src="../res/google-photos.svg" style="
-              height: 20px;
-              width: 20px;
-              vertical-align: top;
-              padding-right: 5px;"
-            >
-          </span>
-          Google Photos
-        </div>
-      `;
-    }
-
     for (let i = 0; i < suggestionsDOM.children.length; i++) {
-      let label = suggestionsDOM.children[i].innerHTML.trim();
+      let label = suggestionsDOM.children[i].innerText;
       let query = suggestionsDOM.children[i].getAttribute('data-follow-up-query');
-      let action = query;
-
-      if (suggestionsDOM.children[i].getAttribute('data-flag') != 'action-btn') {
-        action = `assistantTextQuery(\`${escapeQuotes(query)}\`)`;
-      }
 
       suggestion_parent.innerHTML += `
-        <div class="suggestion" onclick="${action}">${label}</div>
+        <div class="suggestion" onclick="assistantTextQuery(\`${escapeQuotes(query)}\`)">${label}</div>
       `;
     }
   }
@@ -2628,140 +2132,17 @@ async function displayScreenData(screen, pushToHistory=false, theme=null) {
     `;
   }
 
-  // Register horizontal scrolling for suggestion area
-  registerHorizontalScroll(suggestion_area);
-
-  // Apply horizontal scrolling behavior for carousels
-
-  let carouselDOM;
-
-  if (hasCarousel || hasPhotoCarousel) {
-    carouselDOM = document.querySelector('.assistant-markup-response').lastElementChild;
-  }
-  else if (document.querySelector('#google-images-carousel')) {
-    carouselDOM = document.querySelector('.assistant-markup-response').lastElementChild.lastElementChild;
-  }
-  else if (document.querySelector('#tv-item-container')) {
-    carouselDOM = document.querySelector('.assistant-markup-response #tv-item-container');
-  }
-
-  registerHorizontalScroll(carouselDOM, false);
-
   // Push to History
 
-  if (pushToHistory && main_area.querySelector('.error-area') == null) {
-    let screenData;
-
-    if (isGoogleImagesContent) {
-      screenData = generateScreenData(true);
-    }
-    else {
-      screenData = screen;
-    }
-
+  if (pushToHistory) {
     history.push({
       "query": getCurrentQuery(),
-      "screen-data": screenData
+      "screen-data": screen
     });
 
     historyHead = history.length - 1;
     updateNav();
   }
-
-  if (isGoogleImagesContent && getEffectiveTheme() == 'light') {
-    seekHistory(historyHead);
-  }
-}
-
-/**
- * Generates a screen data object from current screen.
- *
- * @param {Boolean} includePreventAutoScaleFlag
- * Include "prevent-auto-scale" flag to the last element
- * of main content. _(Defaults to `false`)_
- *
- * @returns Generated screen data
- */
-function generateScreenData(includePreventAutoScaleFlag=false) {
-  let screenData;
-  let assistantMarkupResponse = document.querySelector('.assistant-markup-response');
-
-  if (includePreventAutoScaleFlag) {
-    assistantMarkupResponse.lastElementChild.setAttribute('data-flag', 'prevent-auto-scale');
-  }
-
-  let screenDataMainContent = `
-    <div id="assistant-card-content">
-      ${assistantMarkupResponse.innerHTML}
-    </div>
-  `;
-
-  let suggestions = document.querySelector('.suggestion-parent').children;
-  let suggestionsDOM = '';
-
-  for (let i = 0; i < suggestions.length; i++) {
-    let flag = suggestions[i].getAttribute('data-flag');
-    let flagAttrib = (flag) ? `data-flag="${flag}"` : '';
-    let label = suggestions[i].innerHTML.trim();
-
-    let followUpQuery = suggestions[i].getAttribute('onclick').replace(/assistantTextQuery\(`(.*)`\)/, '$1');
-
-    suggestionsDOM += `
-    <button data-follow-up-query="${followUpQuery}" ${flagAttrib}>
-      ${label}
-    </button>
-    `;
-  }
-
-  let screenDataSuggestionsHTML = `
-    <div id="assistant-scroll-bar">
-      ${suggestionsDOM}
-    </div>
-  `;
-
-  let finalMarkup = '<html><body>' + screenDataMainContent + screenDataSuggestionsHTML + '</body></html>';
-
-  screenData = {format: 'HTML', data: Buffer.from(finalMarkup, 'utf-8')};
-  return screenData;
-}
-
-/**
- * Horizontally scrolls given element, `el`
- *
- * @param {Event} e
- * Scroll Event
- *
- * @param {HTMLElement} el
- * Element to be scrolled horizontally
- * 
- * @param {Boolean} smoothScroll
- * Whether to set `scrollBehavior` to "smooth"
- */
-function _scrollHorizontally(e, el, smoothScroll) {
-  // Does not accept trackpad horizontal scroll
-  if (e.wheelDeltaX == 0) {
-    let delta = Math.max(-1, Math.min(1, (e.wheelDelta || -e.detail)));
-    let scrollBehavior = (smoothScroll) ? 'smooth' : 'auto';
-    let scrollOffset = 125;
-
-    el.scrollBy({left: -(delta * scrollOffset), behavior: scrollBehavior});
-    e.preventDefault();
-  }
-}
-
-/**
- * Registers horizontal scroll to given element
- * when mouse wheel event is triggered
- *
- * @param {HTMLElement} element
- * Element to be applied upon
- * 
- * @param {Boolean} smoothScroll
- * Whether to set `scrollBehavior` to "smooth"
- */
-function registerHorizontalScroll(element, smoothScroll=true) {
-  if (element)
-    element.onmousewheel = (e) => _scrollHorizontally(e, element, smoothScroll);
 }
 
 /**
@@ -2826,20 +2207,12 @@ function updateReleases(releases) {
  *
  * @param {String} message
  * Message that you want to display
- * 
- * @param {boolean} allowOlyOneMessage
- * Show the message only when no other quick message is showing up.
  */
-function displayQuickMessage(message, allowOlyOneMessage=false) {
-  let nav_region = document.querySelector('#nav-region');
-
-  // Show the message only when no other message is showing up.
-  // If `allowOlyOneMessage` is `true`
-  if (allowOlyOneMessage && nav_region.querySelector('.quick-msg')) return;
-  
+function displayQuickMessage(message) {
   let elt = document.createElement('div');
   elt.innerHTML = message;
 
+  let nav_region = document.querySelector('#nav-region');
   nav_region.appendChild(elt);
   elt.className = 'quick-msg';
   setTimeout(() => nav_region.removeChild(elt), 5000);
@@ -2917,7 +2290,7 @@ function validatePathInput(inputElement, addShakeAnimationOnError=false, trimSpa
  */
 function showGetTokenScreen(oauthValidationCallback) {
   initScreenFlag = 0;
-
+  
   main_area.innerHTML = `
     <div class="fade-in-from-bottom">
       <span
@@ -3043,7 +2416,7 @@ function showGetTokenScreen(oauthValidationCallback) {
           // Tokens were saved
 
           console.log(tokensString);
-          displayQuickMessage("Tokens saved", true);
+          displayQuickMessage("Tokens saved");
 
           setTimeout(() => {
             displayErrorScreen(
@@ -3210,13 +2583,7 @@ function getAssetDownloadUrl(releaseObject) {
           break;
 
         default:
-          if (_isSnap()) {
-            if (asset["name"].endsWith('.snap')) {
-              downloadUrl = asset["browser_download_url"];
-            }
-          }
-
-          else if (asset["name"].endsWith('.AppImage')) {
+          if (asset["name"].endsWith('.AppImage')) {
             downloadUrl = asset["browser_download_url"];
           }
 
@@ -3231,142 +2598,11 @@ function getAssetDownloadUrl(releaseObject) {
 }
 
 /**
- * Performs necessary action(s) to update the assistant.
- */
-function downloadAssistant() {
-  let downloadUrl = getAssetDownloadUrl(releases[0]);
-
-  if (!_isSnap()) {
-    openLink(downloadUrl);
-  }
-  else {
-    let optIndex = dialog.showMessageBoxSync(
-      assistantWindow,
-      {
-        title: 'Snap Download',
-        message: 'Snap Download',
-        detail: 'Snap package can be updated via terminal with the following command:\nsudo snap refresh g-assist\n\nDo you want to update using the shell command?',
-        buttons: [
-          "Run snap refresh (Recommended)",
-          "Download file from repo",
-          "Cancel"
-        ],
-        cancelId: 2
-      }
-    );
-
-    if (optIndex === 0) {
-      // Add a throbber inside download button and update button text
-
-      let updateDownloadBtn = document.querySelector('#download-update-btn');
-
-      if (updateDownloadBtn) {
-        updateDownloadBtn.innerHTML =
-          `<img src="../res/throbber.svg" style="vertical-align: text-top; margin-right: 10px;" /> Updating...`;
-
-        updateDownloadBtn.classList.add('disabled');
-        updateDownloadBtn.onclick = '';
-      }
-
-      // snap refresh g-assist
-
-      let childProcess = exec('/usr/bin/pkexec --disable-internal-agent snap refresh g-assist', (err, stdout, stderr) => {
-        if (stderr) console.log("[STDERR]:", stderr);
-        if (stdout) console.log("[STDOUT]:", stdout);
-
-        if (err) {
-          console.log("ERROR:");
-          console.log(err);
-
-          let updateDownloadBtn = document.querySelector('#download-update-btn');
-
-          if (updateDownloadBtn) {
-            updateDownloadBtn.innerHTML = 'Download update';
-            updateDownloadBtn.classList.remove('disabled');
-            updateDownloadBtn.onclick = downloadAssistant;
-          }
-
-          dialog.showMessageBoxSync(
-            assistantWindow,
-            {
-              title: 'Error while running update command',
-              message: 'Error while running update command',
-              detail: err.toString(),
-              type: 'error',
-              buttons: ["OK"],
-              cancelId: 0
-            }
-          );
-
-          dialog.showMessageBox(
-            assistantWindow,
-            {
-              title: 'Snap Update',
-              message: 'Copy Update Command',
-              detail: 'You can paste the following command on your terminal to update this application:\n\nsudo snap refresh g-assist',
-              type: 'info',
-              buttons: [
-                "Copy command",
-                "OK"
-              ],
-              cancelId: 1
-            }
-          ).then((result) => {
-            if (result.response === 0) {
-              electron.clipboard.writeText('sudo snap refresh g-assist');
-            }
-          });
-        }
-      });
-
-      childProcess.on('exit', (exitCode) => {
-        // Successful update
-        if (exitCode === 0) {
-          let updateDownloadBtn = document.querySelector('#download-update-btn');
-
-          if (updateDownloadBtn) {
-            updateDownloadBtn.innerHTML = 'Relaunch';
-            updateDownloadBtn.classList.remove('disabled');
-            updateDownloadBtn.onclick = () => {
-              dialog.showMessageBox(
-                assistantWindow,
-                {
-                  title: 'Hard Relaunch Required',
-                  message: 'Hard Relaunch Required',
-                  detail: 'Assistant has to perform hard relaunch to finish updating. Press Relaunch to continue.',
-                  type: 'info',
-                  buttons: [
-                    "Relaunch",
-                    "Not Now"
-                  ],
-                  cancelId: 1
-                }
-              ).then((result) => {
-                console.log("DIALOG OPTION:", result);
-
-                if (result.response === 0) {
-                  app.relaunch();
-                  quitApp();
-                }
-              })
-            };
-          }
-        }
-      })
-    }
-
-    else if (optIndex === 1) {
-      openLink(downloadUrl);
-    }
-  }
-}
-
-/**
  * Sets the initial screen.
  */
 function setInitScreen() {
   if (!initScreenFlag) return;
-
+  
   main_area.innerHTML = `
   <div class="init">
     <center id="assistant-logo-main-parent">
@@ -3375,47 +2611,31 @@ function setInitScreen() {
 
     <div id="init-headline-parent">
       <div id="init-headline">
-        ${supportedLanguages[assistantConfig["language"]].welcomeMessage}
+        Hi! How can I help?
       </div>
     </div>
   </div>`;
 
   suggestion_area.innerHTML = `
   <div class="suggestion-parent">
-    ${supportedLanguages[assistantConfig["language"]].initSuggestions.map(suggestionObj => {
-      return (`
-        <div
-          class="suggestion"
-          onclick="assistantTextQuery('${suggestionObj.query}')"
-        >
-            ${suggestionObj.label}
-        </div>
-      `);
-    }).join('')}
+    <div class="suggestion" onclick="assistantTextQuery('How\\'s the Weather today?')">Weather</div>
+    <div class="suggestion" onclick="assistantTextQuery('Toss a coin')">Toss a coin</div>
+    <div class="suggestion" onclick="assistantTextQuery('What can you do?')">What can you do?</div>
   </div>`;
 
   init_headline = document.querySelector('#init-headline');
 }
 
 /**
- * Turns off mic and stops output stream of the audio player.
- * Typically called before the window is closed.
- */
-function _stopAudioAndMic() {
-  mic.stop();
-  audPlayer.stop();
-}
-
-/**
  * Returns effective theme based on `assistantConfig.theme`.
  * If the theme is set to `"system"`, it returns
  * the system theme.
- *
+ * 
  * @param {String} theme
  * Get the effective theme for given theme
  * explicitly. Leave it blank to infer from
  * `assistantConfig.theme`
- *
+ * 
  * @returns {String}
  * Effective theme based on config and system preferences
  */
@@ -3438,10 +2658,10 @@ function getEffectiveTheme(theme=null) {
  * Sets the theme based on the given `theme`.
  * Ignore this parameter, if you want to set
  * the theme based on `assistantConfig.theme`
- *
+ * 
  * @param {String} theme
  * The theme which you want to switch to.
- *
+ * 
  * @param {Boolean} forceAssistantResponseThemeChange
  * Change theme for Assistant Response screen.
  * _(Defaults to `true`)_
@@ -3471,118 +2691,11 @@ function setTheme(theme=null, forceAssistantResponseThemeChange=true) {
 }
 
 /**
- * Display "About" Dialog Box.
- */
-function showAboutBox() {
-  const { commitHash, commitDate } = _getCommitInfo();
-  const appVersion = app.getVersion();
-  const nodeVersion = process.versions.node;
-  const v8Version = process.versions.v8;
-  const electronVersion = process.versions.electron;
-  const chromeVersion = process.versions.chrome;
-  const osInfo = `${os.type()} ${os.arch()} ${os.release()}${_isSnap() ? ' snap' : ''}`;
-
-  const commitInfo = (commitHash != null) ? `Commit ID: ${commitHash}\nCommit Date: ${commitDate}\n` : '';
-  const info = `Version: ${appVersion}\n${commitInfo}Electron: ${electronVersion}\nChrome: ${chromeVersion}\nNode.js: ${nodeVersion}\nV8: ${v8Version}\nOS: ${osInfo}`;
-
-  dialog.showMessageBox(
-    assistantWindow,
-    {
-      type: 'info',
-      title: 'Google Assistant Unofficial Desktop Client',
-      message: 'Google Assistant Unofficial Desktop Client',
-      detail: info,
-      buttons: [
-        "OK",
-        "Copy"
-      ]
-    }
-  ).then((result) => {
-    if (result.response === 1) {
-      // If "Copy" is pressed
-      electron.clipboard.writeText(info);
-    }
-  });
-}
-
-/**
- * Display "Command Line Arguments" Dialog Box.
- */
-function showArgsDialog() {
-  const content = process.argv.join('\n    ');
-
-  dialog.showMessageBox(
-    assistantWindow,
-    {
-      type: 'info',
-      title: 'Google Assistant Unofficial Desktop Client',
-      message: 'Command Line Arguments',
-      detail: content,
-      buttons: [
-        "OK",
-        "Copy"
-      ]
-    }
-  ).then((result) => {
-    if (result.response === 1) {
-      // If "Copy" is pressed
-      electron.clipboard.writeText(content);
-    }
-  });
-}
-
-/**
- * Returns a release object for given version
- * 
- * @param {string} version
- * Version of assistant to get release object of.
- * 
- * If this parameter is left out, the version will
- * be defaulted to currently installed version.
- */
-function getReleaseObject(version) {
-  const ver = _getVersion(version);
-
-  const releaseObject = releases.filter(releaseObject => releaseObject.name == ver)[0];
-  return releaseObject;
-}
-
-/**
- * Returns changelog info from releases array for a given version
- * 
- * @param {string} version
- * Version of assistant to get changelog of.
- * 
- * If this parameter is left out, the version will
- * be defaulted to currently installed version.
- * 
- * @returns {string}
- * Changelog as a string of Markdown.
- */
-function getChangelog(version) {
-  const ver = _getVersion(version);
-  console.log(`Getting Changelog for "${ver}"`);
-
-  const releaseObject = getReleaseObject(ver);
-  const content = releaseObject.body.trim();
-
-  return content;
-}
-
-/**
  * Start the microphone for transcription and visualization.
  */
 function startMic() {
-  if (_canAccessMicrophone) {
-    mic = new Microphone();
-  }
-  else {
-    audPlayer.playPingStop();
-    stopMic();
-    displayQuickMessage("Microphone is not accessible", true);
-    return;
-  }
-
+  mic = new Microphone();
+  
   if (config.conversation["textQuery"] !== undefined) {
     delete config.conversation["textQuery"];
   }
@@ -3598,7 +2711,7 @@ function stopMic() {
   (mic) ? mic.stop() : null;
   webMic.stop();
 
-  if (init_headline) init_headline.innerText = supportedLanguages[assistantConfig["language"]].welcomeMessage;
+  init_headline.innerText = 'Hi! How can I help?';
 
   // Set the `Assistant Mic` icon
 
@@ -3616,173 +2729,11 @@ function stopMic() {
 }
 
 /**
- * Returns `true` if the assistant is running as a
- * snap application (linux).
- */
-function _isSnap() {
-  return app.getAppPath().startsWith('/snap');
-}
-
-/**
- * Returns an object comtaining `commitHash` and `commitDate`
- * of the latest commit.
- * 
- * (**Requires GIT**)
- */
-function _getCommitInfo() {
-  let commitHash;
-  let commitDate;
-
-  try {
-    commitHash = execSync('git rev-parse HEAD').toString().trim();
-    commitDate = execSync('git log -1 --format=%cd').toString().trim();
-  }
-  catch (err) {
-    console.error(err);
-
-    if (app.getAppPath().endsWith('.asar')) {
-      // User is running the release version
-      commitHash = null;
-      commitDate = null;
-    }
-
-    else {
-      // Either git is not installed or is not found in the path
-      commitHash = '[Git not found in the path]';
-      commitDate = 'Unknown';
-    }
-  }
-
-  return {
-    commitHash,
-    commitDate
-  };
-}
-
-/**
- * Converts a string of Markdown to a string
- * of HTML. This implements minimal parsing of the
- * markdown as per the requirements.
- * 
- * @param {string} markdownString
- * String containing Markdown
- */
-function _markdownToHtml(markdownString) {
-  // Put sibling blockquotes as a single blockquote element
-  const multiBlockquotes = markdownString.match(/(^>\s*(.+)\n?)+/gm);
-
-  if (multiBlockquotes) {
-    multiBlockquotes.map(str => {
-      const newSubStr = str
-        .replace(/^>[ \t]*/gm, '')
-        .replace(/\n/gm, '<br />');
-
-      markdownString = markdownString.replace(str, '> ' + newSubStr + '\n');
-    });
-  }
-
-  // Parse markdown and replace them with HTML
-  const htmlString = markdownString
-    .replace(/href=['"](.*?)['"]/gm, 'onclick="openLink(\'$1\')"')
-    .replace(/^\s*>\s*(.+)/gm, '<blockquote>$1</blockquote>')
-    .replace(/(\W*?)- \[ \] (.+)/gm, '$1<li class="markdown-list-checkbox"><input type="checkbox" disabled /> $2</li>')
-    .replace(/(\W*?)- \[x\] (.+)/gm, '$1<li class="markdown-list-checkbox"><input type="checkbox" checked disabled /> $2</li>')
-    .replace(/^-{3,}/gm, '<hr />')
-    .replace(/^={3,}/gm, '<hr />')
-    .replace(/^- (.+)/gm, '<li style="margin-top: 5px;">$1</li>')
-    .replace(/^# (.+)/gm, '<h1>$1</h1>')
-    .replace(/^## (.+)/gm, '<h2>$1</h2>')
-    .replace(/^### (.+)/gm, '<h3>$1</h3>')
-    .replace(/^#### (.+)/gm, '<h4>$1</h4>')
-    .replace(/^##### (.+)/gm, '<h5>$1</h5>')
-    .replace(/^###### (.+)/gm, '<h6>$1</h6>')
-    .replace(/^\[(.+?)\]\((.+?)\)/gm, '<a onclick="openLink(\'$2\')">$1</a>')
-    .replace(/__(.+?)__/gm, '<strong>$1</strong>')
-    .replace(/_(.+?)_/gm, '<i>$1</i>')
-    .replace(/\*\*(.+?)\*\*/gm, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/gm, '<i>$1</i>')
-    .replace(/\`(.+?)\`/gm, '<code>$1</code>')
-    .replace(/\n\n/g, '<br />');
-
-  return htmlString;
-}
-
-/**
- * Returns a version string with a `v` prefixed.
- * 
- * If the `version` provided is empty, current version
- * of the application is returned.
- * 
- * @param {string} version
- * Version
- */
-function _getVersion(version) {
-  if (version == null) version = app.getVersion();
-  const ver = 'v' + version.replace(/^v*/, '');
-
-  return ver;
-}
-
-/**
- * Returns help for granting microphone permission as an
- * HTML string.
- */
-function _getMicPermEnableHelp() {
-  let defaultMsg = 'Manually enable the microphone permissions for "Google Assistant" in the system settings'
-
-  if (process.platform === 'darwin') {
-    // If platform is "MacOS"
-
-    return `
-      You can follow either of the steps:
-      <br />
-
-      <ul>
-        <li>${defaultMsg}</li>
-        <li>
-          Click this button
-
-          <button
-            style="margin-left: 10px;"
-            onclick="electron.remote.systemPreferences.askForMediaAccess('microphone')"
-          >
-            Request microphone permission
-          </button>
-        </li>
-      </ul>
-    `;
-  }
-  else if (process.platform !== 'win32' && _isSnap()) {
-    // If platform is any type of linux distro and application is a snap package.
-
-    return `
-      You can follow either of the steps:
-      <br />
-
-      <ul>
-        <li>${defaultMsg}</li>
-        <li>
-          Type the following command in the <strong>terminal</strong>:
-          <code class="codeblock">sudo snap connect g-assist:audio-record</code>
-        </li>
-      </ul>
-    `;
-  }
-  else {
-    // If platform is "Windows" or any linux distro (application not a snap package)
-
-    return `
-      You can ${defaultMsg.replace(/^M/, 'm')}
-    `;
-  }
-}
-
-/**
  * Returns the name for `super` key based on platform:
  * - **Windows**: `Win`
  * - **MacOS**: `Cmd`
  * - **Linux**: `Super`
- *
+ * 
  * @returns {String}
  * Platform-specific key name for `super`
  */
@@ -3839,39 +2790,34 @@ function updateAvailable(releases_data) {
 
 function displayUpdateAvailable() { displayQuickMessage('Update Available!'); }
 
-function fetchReleasesAndCheckUpdates() {
-  if (!releases) {
-    // API request is only done once to avaoid Error 403 (Rate Limit Exceeded)
-    // when Assistant is launched many times...
+if (!releases) {
+  // API request is only done once to avaoid Error 403 (Rate Limit Exceeded)
+  // when Assistant is launched many times...
 
-    (async() => {
-      let releases_data = await getReleases();
+  (async() => {
+    let releases_data = await getReleases();
 
-      if (updateAvailable(releases_data)) {
-        displayUpdateAvailable();
-      }
-      else {
-        console.log("No Updates Available!");
-      }
-    })();
+    if (updateAvailable(releases_data)) {
+      displayUpdateAvailable();
+    }
+    else {
+      console.log("No Updates Available!");
+    }
+  })();
+}
+
+else {
+  console.log("RELEASES:", releases);
+
+  if (updateAvailable(releases)) {
+    displayUpdateAvailable();
+    console.log("Updates Available");
   }
 
   else {
-    console.log("RELEASES:", releases);
-
-    if (updateAvailable(releases)) {
-      displayUpdateAvailable();
-      console.log("Updates Available");
-    }
-
-    else {
-      console.log("No updates avaiable");
-    }
+    console.log("No updates avaiable");
   }
 }
-
-// Fetch releases and check for updates initially
-fetchReleasesAndCheckUpdates();
 
 // Set Initial Screen
 
@@ -3918,10 +2864,4 @@ ipcRenderer.on('request-mic-toggle', () => {
   else {
     startMic();
   }
-});
-
-// Stop mic and audio before closing window from main
-// process.
-ipcRenderer.on('window-will-close', () => {
-  _stopAudioAndMic();
 });

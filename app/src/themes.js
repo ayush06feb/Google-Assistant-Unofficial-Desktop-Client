@@ -71,5 +71,3 @@ let themes = {
         "--color-option-bg": "inherit"
     }
 }
-
-module.exports = themes;
