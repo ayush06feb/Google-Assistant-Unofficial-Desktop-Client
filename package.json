@@ -36,14 +36,6 @@
             "buildResources": "app/res/misc/*"
         },
         "publish": null,
-        "nsis": {
-            "oneClick": "false",
-            "artifactName": "${productName}-Setup-${version}.${ext}",
-            "allowToChangeInstallationDirectory": "true",
-            "installerIcon": "./app/res/icons/Installer.ico",
-            "installerSidebar": "./app/res/misc/InstallerSidebar.bmp",
-            "uninstallerSidebar": "./app/res/misc/UninstallerSidebar.bmp"
-        },
         "win": {
             "target": [
                 {
@@ -56,14 +48,57 @@
             ],
             "icon": "./app/res/icons/favicon.ico"
         },
+        "nsis": {
+            "oneClick": "false",
+            "artifactName": "${productName}-Setup-${version}.${ext}",
+            "allowToChangeInstallationDirectory": "true",
+            "installerIcon": "./app/res/icons/Installer.ico",
+            "installerSidebar": "./app/res/misc/InstallerSidebar.bmp",
+            "uninstallerSidebar": "./app/res/misc/UninstallerSidebar.bmp"
+        },
+        "mac": {
+            "icon": "./app/res/icons/icon.icns",
+            "category": "public.app-category.productivity",
+            "target": [
+                "dmg"
+            ],
+            "darkModeSupport": true
+        },
+        "dmg": {
+            "background": "./app/res/misc/DMG Background.png",
+            "icon": "./app/res/icons/icon.icns",
+            "iconSize": 100,
+            "contents": [
+                {
+                    "x": 350,
+                    "y": 280,
+                    "type": "link",
+                    "path": "/Applications"
+                },
+                {
+                    "x": 80,
+                    "y": 280,
+                    "type": "file"
+                }
+            ],
+            "window": {
+                "width": 600,
+                "height": 410
+            }
+        },
         "linux": {
             "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
-            "category": "ArtificialIntelligence",
+            "category": "Productivity",
             "target": [
                 "AppImage",
                 "snap"
             ],
-            "icon": "./app/res/icons/Installer Icon.png"
+            "icon": "./app/res/icons/icon.png"
+        },
+        "snap": {
+            "confinement": "classic",
+            "grade": "stable",
+            "plugs": ["default", "audio-record"]
         }
     },
     "scripts": {
@@ -73,11 +108,11 @@
         "postinstall": "electron-builder install-app-deps"
     },
     "dependencies": {
-        "google-assistant": "0.6.2",
-        "grpc": "1.24.2"
+        "google-assistant": "0.6.4",
+        "grpc": "1.24.3"
     },
     "devDependencies": {
-        "electron": "6.0.12",
-        "electron-builder": "22.4.1"
+        "electron": "9.0.3",
+        "electron-builder": "22.8.1"
     }
 }
