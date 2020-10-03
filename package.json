@@ -2,7 +2,7 @@
     "name": "g-assist",
     "productName": "Google Assistant",
     "description": "Google Assistant Unofficial Desktop Client",
-    "version": "1.0.0-rc.1",
+    "version": "1.0.0-rc.2",
     "private": true,
     "author": "Melvin Abraham <melvinredvirus@gmail.com>",
     "homepage": "https://github.com/Melvin-Abraham",
@@ -96,9 +96,12 @@
             "icon": "./app/res/icons/icon.png"
         },
         "snap": {
-            "confinement": "classic",
+            "confinement": "strict",
             "grade": "stable",
-            "plugs": ["default", "audio-record"]
+            "plugs": [
+                "default",
+                "audio-record"
+            ]
         }
     },
     "scripts": {
