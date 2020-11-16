@@ -34,6 +34,8 @@ const os = require('os');
 const { execSync, exec } = require('child_process');
 const themes = require('./themes.js');
 const supportedLanguages = require('./lang.js');
+const Microphone = require('./lib/microphone.js');
+const AudioPlayer = require('./lib/audio_player.js');
 
 let audPlayer = new AudioPlayer();
 let mic = new Microphone();
@@ -51,6 +53,9 @@ let assistantConfig = {
   "enableMicOnContinousConversation": true,
   "startAsMaximized": false,
   "windowFloatBehavior": "always-on-top",
+  "microphoneSource": "default",
+  "speakerSource": "default",
+  "displayPreference": "1",
   "launchAtStartup": true,
   "alwaysCloseToTray": true,
   "enablePingSound": true,
@@ -65,7 +70,7 @@ let history = [];
 let historyHead = -1;
 let firstLaunch = electron.remote.getGlobal('firstLaunch');
 let initScreenFlag = 1;
-let webMic = new p5.AudioIn();  // For Audio Visualization
+let p5jsMic = new p5.AudioIn();  // For Audio Visualization
 let releases = electron.remote.getGlobal('releases');
 let assistant_input = document.querySelector('#assistant-input');
 let assistant_mic = document.querySelector('#assistant-mic');
@@ -85,11 +90,13 @@ let isFirstTimeUser = true;
 // Check Microphone Access
 let _canAccessMicrophone = true;
 
-navigator.mediaDevices.getUserMedia({audio: true}).catch(e => {
-  console.error(e);
-  _canAccessMicrophone = false;
-  displayQuickMessage("Microphone is not accessible");
-})
+navigator.mediaDevices.getUserMedia({audio: true})
+  .then((rawStream) => rawStream.getTracks().forEach(track => track.stop()))
+  .catch(e => {
+    console.error(e);
+    _canAccessMicrophone = false;
+    displayQuickMessage("Microphone is not accessible");
+  });
 
 // Initialize Configuration
 if (fs.existsSync(configFilePath)) {
@@ -187,8 +194,8 @@ else {
       );
 
       relaunchAssistant();
-    };
-  };
+    }
+  }
 
   // If the user is opening the app for the first time,
   // throw `Exception` to prevent Assistant initialization
@@ -216,6 +223,35 @@ if (assistantConfig["windowFloatBehavior"] === 'close-on-blur') {
     close();
   }
 }
+
+// Set microphone and speaker source
+
+(async () => {
+  // Initialize p5.js source list for `setSource` to work
+  await p5jsMic.getSources();
+
+  let deviceList = await navigator.mediaDevices.enumerateDevices();
+  let audioInDeviceIndex = deviceList
+                            .filter(device => device.kind === 'audioinput')
+                            .map(device => device.deviceId)
+                            .indexOf(assistantConfig.microphoneSource);
+
+  let audioOutDeviceIndex = deviceList
+                            .filter(device => device.kind === 'audiooutput')
+                            .map(device => device.deviceId)
+                            .indexOf(assistantConfig.speakerSource);
+
+  if (audioInDeviceIndex !== -1) {
+    // If the audio-in Device ID exists
+    mic.setDeviceId(assistantConfig.microphoneSource);
+    p5jsMic.setSource(audioInDeviceIndex);
+  }
+
+  if (audioOutDeviceIndex !== -1) {
+    // If the audio-out Device ID exists
+    audPlayer.setDeviceId(assistantConfig.speakerSource);
+  }
+})();
 
 const config = {
   auth: {
@@ -478,7 +514,7 @@ const startConversation = (conversation) => {
         );
       }
 
-      else if (continueConversation && assistantConfig["enableMicOnContinousConversation"] && !mic.enabled) {
+      else if (continueConversation && assistantConfig["enableMicOnContinousConversation"] && !mic.isActive) {
         audPlayer.audioPlayer.addEventListener('waiting', () => startMic());
       }
 
@@ -599,17 +635,17 @@ assistant
 
     // Mic Setup
     if (config.conversation.textQuery === undefined) {
-      if (mic.enabled) {
+      if (mic.isActive) {
         console.log('Mic already enabled...')
         return;
       }
 
-      console.log('STARTING MIC...');
+      console.log('STARTING MICROPHONE...');
       if (assistantConfig["enablePingSound"]) audPlayer.playPingStart();
       if (init_headline) init_headline.innerText = supportedLanguages[assistantConfig["language"]].listeningMessage;
 
-      // Set `webMic` for visulaization
-      webMic.start();
+      // Set `p5jsMic` for visulaization
+      p5jsMic.start();
       let assistant_mic_parent = document.querySelector('#assistant-mic-parent');
 
       assistant_mic_parent.outerHTML = `
@@ -633,14 +669,12 @@ assistant
 
       // Setup mic for recording
 
-      mic.start();
-
-      mic.on('data', (data) => {
+      let processConversation = (data) => {
         const buffer = Buffer.from(data);
         conversation.write(buffer);
 
         const amp_threshold = 0.05;
-        let amp = webMic.getLevel();
+        let amp = p5jsMic.getLevel();
         let amp_bar_list = document.querySelectorAll('.amp-bar');
 
         amp_bar_list[0].setAttribute('style', `
@@ -662,7 +696,16 @@ assistant
           background-color: var(--color-green);
           height: ${constrain(map(amp, 0, amp_threshold, 6, 20), 6, 20)}px;`
         );
-      });
+      }
+
+      let micStoppedListener = () => {
+        mic.off('data', processConversation);
+        mic.off('mic-stopped', micStoppedListener);
+        conversation.end();
+      };
+      
+      mic.on('data', processConversation);
+      mic.on('mic-stopped', micStoppedListener);
     }
   })
   .on('error', (err) => {
@@ -754,7 +797,7 @@ assistant
 
 /**
  * Escapes the quotation marks in the `string` for use in HTML and URL.
- * @param {String} string
+ * @param {string} string
  */
 function escapeQuotes(string) {
   string = string.replace(/["]/g, '&quot;');
@@ -768,7 +811,7 @@ function escapeQuotes(string) {
  * and returns an `Object` containing the type of the
  * response and various parts of the response.
  *
- * @param {String} assistantResponseString
+ * @param {string} assistantResponseString
  * The response that has to be classified
  */
 function inspectResponseType(assistantResponseString) {
@@ -808,10 +851,10 @@ function inspectResponseType(assistantResponseString) {
 /**
  * Opens a `link` in the default browser.
  *
- * @param {String} link
+ * @param {string} link
  * Link that is to be opened in the browser.
  *
- * @param {Boolean} autoMinimizeAssistantWindow
+ * @param {boolean} autoMinimizeAssistantWindow
  * Minimize the Assistant Window after the link is opened.
  * _(Defaults to `true`)_
  */
@@ -826,7 +869,7 @@ function openLink(link, autoMinimizeAssistantWindow=true) {
 
 /**
  * Jumps to any result in `history` using `historyIndex`
- * @param {Number} historyIndex
+ * @param {number} historyIndex
  */
 function seekHistory(historyIndex) {
   historyHead = historyIndex;
@@ -842,7 +885,7 @@ function seekHistory(historyIndex) {
 /**
  * Decrements the `historyHead` and then shows previous result from the `history`
  *
- * @returns {Boolean}
+ * @returns {boolean}
  * `true` if successfully jumps to previous result, `false` otherwise.
  */
 function jumpToPrevious() {
@@ -859,7 +902,7 @@ function jumpToPrevious() {
 /**
  * Increments the `historyHead` and then shows next result from the `history`
  *
- * @returns {Boolean}
+ * @returns {boolean}
  * `true` if successfully jumps to next result, `false` otherwise.
  */
 function jumpToNext() {
@@ -877,8 +920,8 @@ function jumpToNext() {
  * Callback for file selection.
  *
  * @callback fileDialogCallback
- * @param {String[]} filePaths
- * @param {String[]} bookmarks
+ * @param {string[]} filePaths
+ * @param {string[]} bookmarks
  */
 
 /**
@@ -887,7 +930,7 @@ function jumpToNext() {
  * @param {fileDialogCallback} callback
  * The function called after a file is selected.
  *
- * @param {String} openDialogTitle
+ * @param {string} openDialogTitle
  * The Title for the dialog box.
  */
 function openFileDialog(callback, openDialogTitle=null) {
@@ -924,7 +967,7 @@ function saveConfig(config=null) {
 /**
  * Opens the 'Settings' screen
  */
-function openConfig() {
+async function openConfig() {
   if (!document.querySelector('#config-screen')) {
     let currentHTML = document.querySelector('body').innerHTML;
 
@@ -1232,6 +1275,32 @@ function openConfig() {
               </select>
             </div>
           </div>
+          <div class="setting-item">
+            <div class="setting-key">
+              Display Preference
+
+              <span style="
+                vertical-align: sub;
+                margin-left: 10px;
+              ">
+                <img
+                  src="../res/help.svg"
+                  title="Allows selection of screen for displaying the window."
+                >
+              </span>
+            </div>
+            <div class="setting-value" style="height: 35px;">
+              <select id="display-selector" style="padding-right: 50px;">
+                ${electron.remote.screen.getAllDisplays().map((display, index) => {
+                  const { bounds, scaleFactor } = display;
+
+                  return `<option value="${index + 1}">
+                    Display ${index + 1} - (${bounds.width * scaleFactor} x ${bounds.height * scaleFactor})
+                  </option>`
+                })}
+              </select>
+            </div>
+          </div>
           <div class="setting-label">
             ACCESSIBILTY
             <hr />
@@ -1346,6 +1415,48 @@ function openConfig() {
                 <option value="launch+mic">Launch App / Toggle Microphone</option>
                 <option value="launch+close">Launch App / Close App</option>
               </select>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div class="setting-key">
+              Microphone Source
+
+              <span style="
+                vertical-align: sub;
+                margin-left: 10px;
+              ">
+                <img
+                  src="../res/help.svg"
+                  title="Select microphone source for audio input"
+                >
+              </span>
+            </div>
+            <div class="setting-value" style="height: 35px;">
+              <select
+                id="mic-source-selector"
+                style="width: -webkit-fill-available;"
+              ></select>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div class="setting-key">
+              Speaker Source
+
+              <span style="
+                vertical-align: sub;
+                margin-left: 10px;
+              ">
+                <img
+                  src="../res/help.svg"
+                  title="Select speaker source for audio output"
+                >
+              </span>
+            </div>
+            <div class="setting-value" style="height: 35px;">
+              <select
+                id="speaker-source-selector"
+                style="width: -webkit-fill-available;"
+              ></select>
             </div>
           </div>
           <div class="setting-item">
@@ -1619,6 +1730,9 @@ function openConfig() {
     let enableMicOnStartup = document.querySelector('#enable-mic-startup');
     let startAsMaximized = document.querySelector('#start-maximized');
     let winFloatBehaviorSelector = document.querySelector('#win-float-behavior-selector');
+    let microphoneSourceSelector = document.querySelector('#mic-source-selector');
+    let speakerSourceSelector = document.querySelector('#speaker-source-selector');
+    let displayPreferenceSelector = document.querySelector('#display-selector');
     let launchAtStartUp = document.querySelector('#launch-at-startup');
     let alwaysCloseToTray = document.querySelector('#close-to-tray');
     let enablePingSound = document.querySelector('#ping-sound');
@@ -1627,6 +1741,22 @@ function openConfig() {
     let hotkeyBehaviorSelector = document.querySelector('#hotkey-behavior-selector');
 
     keyFilePathInput.addEventListener('focusout', () => validatePathInput(keyFilePathInput));
+
+    // Populate microphone and speaker source selectors
+    let deviceList = await navigator.mediaDevices.enumerateDevices();
+
+    deviceList.forEach(device => {
+      let selectItem = document.createElement('option');
+      selectItem.value = device.deviceId;
+      selectItem.text = device.label;
+
+      if (device.kind === 'audioinput') {
+        microphoneSourceSelector.appendChild(selectItem);
+      }
+      else if (device.kind === 'audiooutput') {
+        speakerSourceSelector.appendChild(selectItem);
+      }
+    });
 
     keyFilePathInput.value = assistantConfig["keyFilePath"];
     savedTokensPathInput.value = assistantConfig["savedTokensPath"];
@@ -1637,6 +1767,9 @@ function openConfig() {
     enableMicOnStartup.checked = assistantConfig["enableMicOnStartup"];
     startAsMaximized.checked = assistantConfig["startAsMaximized"];
     winFloatBehaviorSelector.value = assistantConfig["windowFloatBehavior"];
+    microphoneSourceSelector.value = assistantConfig["microphoneSource"];
+    speakerSourceSelector.value = assistantConfig["speakerSource"];
+    displayPreferenceSelector.value = assistantConfig["displayPreference"];
     launchAtStartUp.checked = assistantConfig["launchAtStartup"];
     alwaysCloseToTray.checked = assistantConfig["alwaysCloseToTray"];
     enablePingSound.checked = assistantConfig["enablePingSound"];
@@ -1973,6 +2106,14 @@ function openConfig() {
           relaunchRequired = true;
         }
 
+        // Set display preference update flag before saving config
+
+        let shouldUpdateDisplayPref = true;
+
+        if (assistantConfig["displayPreference"] === displayPreferenceSelector.value) {
+          shouldUpdateDisplayPref = false;
+        }
+
         // Set the `assistantConfig` as per the settings
 
         assistantConfig["keyFilePath"] = keyFilePathInput.value;
@@ -1984,6 +2125,9 @@ function openConfig() {
         assistantConfig["enableMicOnStartup"] = enableMicOnStartup.checked;
         assistantConfig["startAsMaximized"] = startAsMaximized.checked;
         assistantConfig["windowFloatBehavior"] = winFloatBehaviorSelector.value;
+        assistantConfig["microphoneSource"] = microphoneSourceSelector.value;
+        assistantConfig["speakerSource"] = speakerSourceSelector.value;
+        assistantConfig["displayPreference"] = displayPreferenceSelector.value;
         assistantConfig["launchAtStartup"] = launchAtStartUp.checked;
         assistantConfig["alwaysCloseToTray"] = alwaysCloseToTray.checked;
         assistantConfig["enablePingSound"] = enablePingSound.checked;
@@ -1995,6 +2139,7 @@ function openConfig() {
 
         config.conversation.isNew = assistantConfig["forceNewConversation"];
         config.conversation.lang = assistantConfig["language"];
+        assistant_input.placeholder = supportedLanguages[assistantConfig["language"]].inputPlaceholder;
 
         app.setLoginItemSettings({
           openAtLogin: assistantConfig["launchAtStartup"]
@@ -2014,6 +2159,18 @@ function openConfig() {
           }
         }
 
+        mic.setDeviceId(assistantConfig["microphoneSource"]);
+
+        p5jsMic.getSources((sources) => {
+          p5jsMic.setSource(sources
+            .filter(source => source.kind === 'audioinput')
+            .map(source => source.deviceId)
+            .indexOf(assistantConfig["microphoneSource"])
+          );
+        });
+
+        audPlayer.setDeviceId(assistantConfig["speakerSource"]);
+
         // Notify about config changes to main process
         ipcRenderer.send('update-config', assistantConfig);
 
@@ -2022,6 +2179,13 @@ function openConfig() {
         saveConfig();
         closeCurrentScreen();
         setTheme();
+
+        // Collapses and properly positions the window (if the display preferences change)
+
+        if (shouldUpdateDisplayPref) {
+          console.log(`Switching to \"Display ${assistantConfig["displayPreference"]}\"`);
+          toggleExpandWindow(false);
+        }
 
         // Request user to relaunch assistant if necessary
 
@@ -2100,7 +2264,7 @@ function updateNav() {
 
 /**
  * Ask a `query` from assistant in text.
- * @param {String} query
+ * @param {string} query
  */
 function assistantTextQuery(query) {
   if (query.trim()) {
@@ -2117,7 +2281,7 @@ function assistantTextQuery(query) {
 
 /**
  * Set the `query` in titlebar
- * @param {String} query
+ * @param {string} query
  */
 function setQueryTitle(query) {
   let init = document.querySelector(".init");
@@ -2139,7 +2303,7 @@ function setQueryTitle(query) {
 
 /**
  * Returns the title displayed in the 'titlebar'
- * @returns {String} Title
+ * @returns {string} Title
  */
 function getCurrentQuery() {
   return document.querySelector('.app-title').innerText;
@@ -2148,7 +2312,7 @@ function getCurrentQuery() {
 /**
  * Retry/Refresh result for the query displayed in the titlebar
  *
- * @param {Boolean} popHistory
+ * @param {boolean} popHistory
  * Remove the recent result from history and replace it with the refreshed one.
  * _(Defaults to `true`)_
  */
@@ -2181,28 +2345,28 @@ function deactivateLoader() {
  * @param {Object} opts
  * Options to be passed to define and customize the error screen
  *
- * @param {String=} opts.errContainerId
+ * @param {string=} opts.errContainerId
  * Set the `id` of error container
  *
  * @param {Object} opts.icon
  * The icon object
  *
- * @param {String=} opts.icon.path
+ * @param {string=} opts.icon.path
  * The Path to the icon to be used as Error Icon
  *
- * @param {String=} opts.icon.style
+ * @param {string=} opts.icon.style
  * Additional styles applied to the icon
  *
- * @param {String=} opts.title
+ * @param {string=} opts.title
  * The Title of the error
  *
- * @param {String=} opts.details
+ * @param {string=} opts.details
  * Description of the error
  *
- * @param {String=} opts.subdetails
+ * @param {string=} opts.subdetails
  * Sub-details/Short description of the error
  *
- * @param {String=} opts.customStyle
+ * @param {string=} opts.customStyle
  * Any custom styles that you want to apply
  */
 function displayErrorScreen(opts={}) {
@@ -2253,11 +2417,11 @@ function displayErrorScreen(opts={}) {
  * @param {*} screen
  * The screen data provided by Assistant SDK
  *
- * @param {Boolean} pushToHistory
+ * @param {boolean} pushToHistory
  * Push the *screen data* to the `history`.
  * _(Defaults to `false`)_
  *
- * @param {String} theme
+ * @param {"dark" | "light" | "system"} theme
  * Theme to be applied on screen data.
  * Leave this parameter to infer from `assistantConfig.theme`
  */
@@ -2676,7 +2840,7 @@ async function displayScreenData(screen, pushToHistory=false, theme=null) {
 /**
  * Generates a screen data object from current screen.
  *
- * @param {Boolean} includePreventAutoScaleFlag
+ * @param {boolean} includePreventAutoScaleFlag
  * Include "prevent-auto-scale" flag to the last element
  * of main content. _(Defaults to `false`)_
  *
@@ -2733,8 +2897,8 @@ function generateScreenData(includePreventAutoScaleFlag=false) {
  *
  * @param {HTMLElement} el
  * Element to be scrolled horizontally
- * 
- * @param {Boolean} smoothScroll
+ *
+ * @param {boolean} smoothScroll
  * Whether to set `scrollBehavior` to "smooth"
  */
 function _scrollHorizontally(e, el, smoothScroll) {
@@ -2755,8 +2919,8 @@ function _scrollHorizontally(e, el, smoothScroll) {
  *
  * @param {HTMLElement} element
  * Element to be applied upon
- * 
- * @param {Boolean} smoothScroll
+ *
+ * @param {boolean} smoothScroll
  * Whether to set `scrollBehavior` to "smooth"
  */
 function registerHorizontalScroll(element, smoothScroll=true) {
@@ -2765,26 +2929,23 @@ function registerHorizontalScroll(element, smoothScroll=true) {
 }
 
 /**
- * Position the `window` in bottom-center of the screen.
- *
- * @param {Electron.BrowserWindow} window
- * The Electron Window which has to be positioned.
+ * Position the Assistant Window in bottom-center of the screen.
  */
-function autoSetAssistantWindowPosition(window) {
-  let width = screen.availWidth;
-  let height = screen.availHeight;
-  let windowSize = window.getSize();
-
-  window.setPosition(
-    (width / 2) - (windowSize[0] / 2),
-    (height) - (windowSize[1]) - 10
-  );
+function setAssistantWindowPosition() {
+  ipcRenderer.send('set-assistant-window-position');
 }
 
 /**
  * Toggle Expand/Collapse Assistant Window.
+ *
+ * @param {boolean?} shouldExpandWindow
+ * Specify whether the window should be expanded.
+ * Leave the parameter if the window should toggle
+ * the size automatically.
  */
-function toggleExpandWindow() {
+function toggleExpandWindow(shouldExpandWindow) {
+  if (shouldExpandWindow != null) expanded = !shouldExpandWindow;
+
   if (!expanded) {
     assistantWindow.setSize(screen.availWidth - 20, 450);
     expand_collapse_btn.setAttribute('src', '../res/collapse_btn.svg'); // Change to 'collapse' icon after expanding
@@ -2794,7 +2955,7 @@ function toggleExpandWindow() {
     expand_collapse_btn.setAttribute('src', '../res/expand_btn.svg');   // Change to 'expand' icon after collapsing
   }
 
-  autoSetAssistantWindowPosition(assistantWindow);
+  setAssistantWindowPosition();
   expanded = !expanded;
 }
 
@@ -2824,9 +2985,9 @@ function updateReleases(releases) {
 /**
  * Displays `message` for short timespan near the `nav region`.
  *
- * @param {String} message
+ * @param {string} message
  * Message that you want to display
- * 
+ *
  * @param {boolean} allowOlyOneMessage
  * Show the message only when no other quick message is showing up.
  */
@@ -2836,7 +2997,7 @@ function displayQuickMessage(message, allowOlyOneMessage=false) {
   // Show the message only when no other message is showing up.
   // If `allowOlyOneMessage` is `true`
   if (allowOlyOneMessage && nav_region.querySelector('.quick-msg')) return;
-  
+
   let elt = document.createElement('div');
   elt.innerHTML = message;
 
@@ -2852,7 +3013,7 @@ function displayQuickMessage(message, allowOlyOneMessage=false) {
  * @param {Element} inputElement
  * The target `input` DOM Element to apply the styles on
  *
- * @param {Boolean} addShakeAnimation
+ * @param {boolean} addShakeAnimation
  * Whether additional shaking animation should be applied to the `inputElement`.
  * _(Defaults to `false`)_
  */
@@ -2883,15 +3044,15 @@ function markInputAsValid(inputElement) {
  * @param {Element} inputElement
  * The `input` DOM Element to be validated
  *
- * @param {Boolean} addShakeAnimationOnError
+ * @param {boolean} addShakeAnimationOnError
  * Add animation to let the user know if the path does not exist.
  * _(Defaults to `false`)_
  *
- * @param {Boolean} trimSpaces
+ * @param {boolean} trimSpaces
  * Trims leading and trailing spaces if any are present in the
  * path entered in `inputElement`. _(Defaults to `true`)_
  *
- * @returns {Boolean}
+ * @returns {boolean}
  * Returns boolean value (true/false) based on the validity of path
  */
 function validatePathInput(inputElement, addShakeAnimationOnError=false, trimSpaces=true) {
@@ -2912,7 +3073,7 @@ function validatePathInput(inputElement, addShakeAnimationOnError=false, trimSpa
  *
  * _(Call is initiated by the Google Assistant auth library)_
  *
- * @param {Fuction} oauthValidationCallback
+ * @param {function} oauthValidationCallback
  * The callback to process the OAuth Code.
  */
 function showGetTokenScreen(oauthValidationCallback) {
@@ -3184,7 +3345,7 @@ async function getReleases() {
  * @param {*} releaseObject
  * A Release object (JSON) for a particular version
  *
- * @returns {String}
+ * @returns {string}
  * The Download URL for downloading the installer
  * based on the platform (Windows, MacOS, Linux)
  */
@@ -3395,6 +3556,7 @@ function setInitScreen() {
   </div>`;
 
   init_headline = document.querySelector('#init-headline');
+  assistant_input.placeholder = supportedLanguages[assistantConfig["language"]].inputPlaceholder;
 }
 
 /**
@@ -3411,12 +3573,12 @@ function _stopAudioAndMic() {
  * If the theme is set to `"system"`, it returns
  * the system theme.
  *
- * @param {String} theme
+ * @param {"dark" | "light" | "system"} theme
  * Get the effective theme for given theme
  * explicitly. Leave it blank to infer from
  * `assistantConfig.theme`
  *
- * @returns {String}
+ * @returns {string}
  * Effective theme based on config and system preferences
  */
 function getEffectiveTheme(theme=null) {
@@ -3436,13 +3598,13 @@ function getEffectiveTheme(theme=null) {
 
 /**
  * Sets the theme based on the given `theme`.
+ *
+ * @param {"dark" | "light" | "system"} theme
+ * The theme which you want to switch to.
  * Ignore this parameter, if you want to set
  * the theme based on `assistantConfig.theme`
  *
- * @param {String} theme
- * The theme which you want to switch to.
- *
- * @param {Boolean} forceAssistantResponseThemeChange
+ * @param {boolean} forceAssistantResponseThemeChange
  * Change theme for Assistant Response screen.
  * _(Defaults to `true`)_
  */
@@ -3533,10 +3695,10 @@ function showArgsDialog() {
 
 /**
  * Returns a release object for given version
- * 
+ *
  * @param {string} version
  * Version of assistant to get release object of.
- * 
+ *
  * If this parameter is left out, the version will
  * be defaulted to currently installed version.
  */
@@ -3549,13 +3711,13 @@ function getReleaseObject(version) {
 
 /**
  * Returns changelog info from releases array for a given version
- * 
+ *
  * @param {string} version
  * Version of assistant to get changelog of.
- * 
+ *
  * If this parameter is left out, the version will
  * be defaulted to currently installed version.
- * 
+ *
  * @returns {string}
  * Changelog as a string of Markdown.
  */
@@ -3574,7 +3736,7 @@ function getChangelog(version) {
  */
 function startMic() {
   if (_canAccessMicrophone) {
-    mic = new Microphone();
+    if (!mic) mic = new Microphone();
   }
   else {
     audPlayer.playPingStop();
@@ -3587,6 +3749,7 @@ function startMic() {
     delete config.conversation["textQuery"];
   }
 
+  mic.start();
   assistant.start(config.conversation);
 }
 
@@ -3594,9 +3757,9 @@ function startMic() {
  * Stops the microphone for transcription and visualization.
  */
 function stopMic() {
-  console.log('STOPPING MIC...');
+  console.log('STOPPING MICROPHONE...');
   (mic) ? mic.stop() : null;
-  webMic.stop();
+  p5jsMic.stop();
 
   if (init_headline) init_headline.innerText = supportedLanguages[assistantConfig["language"]].welcomeMessage;
 
@@ -3626,7 +3789,7 @@ function _isSnap() {
 /**
  * Returns an object comtaining `commitHash` and `commitDate`
  * of the latest commit.
- * 
+ *
  * (**Requires GIT**)
  */
 function _getCommitInfo() {
@@ -3663,7 +3826,7 @@ function _getCommitInfo() {
  * Converts a string of Markdown to a string
  * of HTML. This implements minimal parsing of the
  * markdown as per the requirements.
- * 
+ *
  * @param {string} markdownString
  * String containing Markdown
  */
@@ -3709,10 +3872,10 @@ function _markdownToHtml(markdownString) {
 
 /**
  * Returns a version string with a `v` prefixed.
- * 
+ *
  * If the `version` provided is empty, current version
  * of the application is returned.
- * 
+ *
  * @param {string} version
  * Version
  */
@@ -3783,7 +3946,7 @@ function _getMicPermEnableHelp() {
  * - **MacOS**: `Cmd`
  * - **Linux**: `Super`
  *
- * @returns {String}
+ * @returns {string}
  * Platform-specific key name for `super`
  */
 function getSuperKey() {
@@ -3798,11 +3961,11 @@ function getSuperKey() {
  * Maps the value `n` which ranges between `start1` and `stop1`
  * to `start2` and `stop2`.
  *
- * @param {Number} n
- * @param {Number} start1
- * @param {Number} stop1
- * @param {Number} start2
- * @param {Number} stop2
+ * @param {number} n
+ * @param {number} start1
+ * @param {number} stop1
+ * @param {number} start2
+ * @param {number} stop2
  */
 function map(n, start1, stop1, start2, stop2) {
   return (n - start1) / (stop1 - start1) * (stop2 - start2) + start2;
@@ -3811,9 +3974,9 @@ function map(n, start1, stop1, start2, stop2) {
 /**
  * Contrain `n` between `high` and `low`
  *
- * @param {Number} n
- * @param {Number} low
- * @param {Number} high
+ * @param {number} n
+ * @param {number} low
+ * @param {number} high
  */
 function constrain(n, low, high) {
   return (n < low) ? low : (n > high) ? high : n;
@@ -3911,7 +4074,7 @@ window.matchMedia("(prefers-color-scheme: light)").onchange = (e) => {
 
 // Listen for 'mic start' request from main process
 ipcRenderer.on('request-mic-toggle', () => {
-  if (mic.enabled) {
+  if (mic.isActive) {
     audPlayer.playPingStop()
     stopMic();
   }
